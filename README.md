@@ -188,19 +188,11 @@ Recommended test sequence:
 8. Test protected endpoints without a token and verify that they return `401`.
 9. Test `/auth/logout` with a valid token and verify the `204` response.
 
+
 ## API Documentation Screenshot
 
-Add a screenshot of the running Swagger UI to the repository, for example:
-
-```text
-screenshots/swagger-ui.png
-```
-
-Once the screenshot exists, display it here:
-
-```markdown
 ![Swagger UI](screenshots/swagger-ui.png)
-```
+
 
 ## Security Notes
 
