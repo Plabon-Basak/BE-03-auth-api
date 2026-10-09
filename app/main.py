@@ -1,20 +1,23 @@
 
 from fastapi import (
+    Depends,
     FastAPI,
     HTTPException,
-    Depends,
     Request,
+    Response,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from gotrue.errors import AuthApiError
 
-from app.schemas import AuthRequest
-from app.supabase_client import supabase
-
-from fastapi import Depends, Response
 from app.auth import get_current_user
+from app.schemas import AuthRequest
+from app.security import bearer_scheme
+from app.supabase_client import supabase
+import httpx
+
+from app.supabase_client import SUPABASE_URL, SUPABASE_KEY
 
 app = FastAPI(
     title="FlyRank BE-03 Auth API",
@@ -22,13 +25,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
-bearer_scheme = HTTPBearer(auto_error=False)
-
 
 @app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError):
+async def validation_error_handler(
+    request: Request,
+    exc: RequestValidationError,
+):
     missing_fields = {
-        error.get("loc", [])[-1]
+        error["loc"][-1]
         for error in exc.errors()
         if error.get("type") == "missing" and error.get("loc")
     }
@@ -45,7 +49,10 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 
 @app.exception_handler(HTTPException)
-async def http_error_handler(request: Request, exc: HTTPException):
+async def http_error_handler(
+    request: Request,
+    exc: HTTPException,
+):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": str(exc.detail)},
@@ -54,7 +61,7 @@ async def http_error_handler(request: Request, exc: HTTPException):
 
 
 @app.get("/")
-def root():
+async def root():
     return {
         "message": "FlyRank BE-03 Auth API is running",
         "supabase_initialized": supabase is not None,
@@ -62,7 +69,7 @@ def root():
 
 
 @app.get("/health")
-def health():
+async def health():
     return {"status": "ok"}
 
 
@@ -87,10 +94,12 @@ async def signup(data: AuthRequest):
             detail="Unable to create account",
         )
 
-    return {"user": response.user.model_dump(mode="json")}
+    return {
+        "user": response.user.model_dump(mode="json"),
+    }
 
 
-@app.post("/auth/login")
+@app.post("/auth/login", status_code=200)
 async def login(data: AuthRequest):
     try:
         response = supabase.auth.sign_in_with_password(
@@ -120,15 +129,16 @@ async def login(data: AuthRequest):
 
 
 @app.get("/public/info")
-def public_info():
+async def public_info():
     return {
         "message": "Welcome stranger! This info is public."
     }
 
 
-
 @app.get("/protected/profile")
-async def protected_profile(user=Depends(get_current_user)):
+async def protected_profile(
+    user=Depends(get_current_user),
+):
     return {
         "id": user.id,
         "email": user.email,
@@ -137,7 +147,9 @@ async def protected_profile(user=Depends(get_current_user)):
 
 
 @app.get("/protected/dashboard")
-async def protected_dashboard(user=Depends(get_current_user)):
+async def protected_dashboard(
+    user=Depends(get_current_user),
+):
     return {
         "message": f"Welcome to your dashboard, {user.email}",
         "user": {
@@ -147,19 +159,41 @@ async def protected_dashboard(user=Depends(get_current_user)):
     }
 
 
+
 @app.post("/auth/logout", status_code=204)
 async def logout(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        bearer_scheme
+    ),
     user=Depends(get_current_user),
 ):
     token = credentials.credentials
 
     try:
-        supabase.auth.sign_out(jwt=token)
-    except Exception:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{SUPABASE_URL.rstrip('/')}/auth/v1/logout",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to contact authentication service",
+        )
+
+    if response.status_code in (200, 204):
+        return Response(status_code=204)
+
+    if response.status_code == 401:
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired token",
         )
 
-    return Response(status_code=204)
+    raise HTTPException(
+        status_code=502,
+        detail="Authentication service logout failed",
+    )
